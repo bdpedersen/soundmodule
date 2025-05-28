@@ -1,67 +1,72 @@
 use algoparam::{AlgoParamNode, AlgoParamSet};
-use core::{ffi::c_void};
-use std::{slice};
+use core::{ffi::c_void, sync};
+use std::{any::Any, slice};
 
 pub trait Algorithm : Send + Sync {
     // Returns an AlgoParamSet with basename as name. Each algorithm parameter uses self_ref for control.
     // Submodules must be instantiated as Rc<RefCell<>> and the corresponding parameters inserted in the tree by this method.
-    fn init(&mut self, fs: i32, zones: usize, states: usize);
-    fn get_parameters(&self, zone: usize, basename: &str) -> AlgoParamSet;
-    fn process(&self, zone: usize, state: usize, outputs: &[&mut [f32]], inputs: &[&[f32]]);
+    fn init(&mut self, fs: i32, states: usize);
+    // Returns the parameter set and the associated storage for using with the setter
+    fn get_parameters(&self, basename: &str) -> (AlgoParamSet, Box<dyn Any>);
+    fn process(&self, parameter_zone: &Box<dyn Any>, outputs: &[&mut [f32]], inputs: &[&[f32]]);
+    fn send_midi(&self, data: &[u8], timestamp: u64);
 }
 
-pub trait Synth : Algorithm {
-    fn noteon(&self, zone: usize, state: usize, key: i8, velocity: i8);
-    fn noteoff(&self, zone: usize, state: usize, key: i8, velocity: i8);
-}
 
 pub struct SoundModule {
-    pub algo: Box<dyn Algorithm>,
+    pub algo_state: Box<dyn Algorithm>,
     pub param: AlgoParamSet,
+    pub parameter_zone: Box<dyn Any>,
 }
 
 impl SoundModule {
-    pub fn new(mut algo: Box<dyn Algorithm>, fs: i32, zones: usize, states: usize) -> SoundModule {
+    pub fn new(mut algo: Box<dyn Algorithm>, fs: i32, states: usize) -> SoundModule {
 
-        algo.init(fs,zones,states);
-
-            if zones > 0 {
-            let mut params =  Vec::<AlgoParamSet>::new();
-            for zone in 0..zones {
-                let rootname = format!("Zone {}",zone);
-                let zoneparam = algo.get_parameters(zone,&rootname);
-                params.push(zoneparam);
-            }
-            let mut param = AlgoParamSet::new("Root");
-            while let Some(p) = params.pop() {
-                param.add(AlgoParamNode::ParamSet(p)).expect("Programmer error?");
-            }
-            SoundModule {algo, param}
-        } else {
-            let param = algo.get_parameters(0, "Root");
-            SoundModule {algo, param}
-        }
+        algo.init(fs, states);
+        let params = algo.get_parameters("Root");
+        SoundModule { algo_state: algo, param: params.0, parameter_zone: params.1 }
     }
 }
 
-fn as_soundmodule(this: *mut c_void) -> *mut SoundModule {
-    this as *mut SoundModule
+fn as_soundmodule<'a>(this: *mut c_void) -> &'a mut SoundModule {
+    let mut _mod = this as *mut SoundModule;
+    unsafe { _mod.as_mut().unwrap() } 
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn soundmodule_release(this: *mut c_void) {
     if !this.is_null() {
         unsafe {
-            drop(Box::from_raw(as_soundmodule(this)));
+            drop(Box::from_raw(as_soundmodule(this) as *mut _));
         }
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn soundmodule_get_params(this: *mut c_void) -> *const c_void {
-    let myself = unsafe { as_soundmodule(this).as_ref().unwrap() };
+    let myself = as_soundmodule(this);
     let ptr = &myself.param as *const _ as *const c_void;
     ptr
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn soundmodule_send_midi(this: *mut c_void, data: *const u8, len: usize, timestamp: u64) {
+    let myself = as_soundmodule(this);
+    let box_ref = &myself.algo_state;
+    let data = unsafe { slice::from_raw_parts(data, len) };
+    box_ref.send_midi(data,timestamp);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn soundmodule_set_parameter(this: *mut c_void, address: u64, value: f32) {
+    let myself = as_soundmodule(this);
+    let _ = myself.param.set(value,address);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn soundmodule_get_parameter(this: *mut c_void, address: u64) -> f32 {
+    let myself = as_soundmodule(this);
+    myself.param.get(address).unwrap_or(0.0)
 }
 
 #[unsafe(no_mangle)]
@@ -78,10 +83,10 @@ pub extern "C" fn soundmodule_run(
         let ro = unsafe {slice::from_raw_parts_mut(right_out, bz) };
         let li = unsafe {slice::from_raw_parts(left_in, bz) };
         let ri = unsafe {slice::from_raw_parts(right_in, bz) };
-        let myself = unsafe {as_soundmodule(this).as_ref().unwrap() };
+        let myself = as_soundmodule(this);
         
         let output = [lo,ro];
         let input = [li,ri];
 
-        myself.algo.process(0, 0, &output, &input);
+        myself.algo_state.process(&myself.parameter_zone, &output, &input);
     }
