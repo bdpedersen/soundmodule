@@ -91,4 +91,59 @@ pub extern "C" fn soundmodule_run(
         let input = [li,ri];
 
         myself.algo_state.process(&myself.parameter_zone, &output, &input);
-    }
+}
+
+#[macro_export]
+macro_rules! reexport_c_symbols_explicit {
+    (
+        $(fn $name:ident($($arg:ident : $arg_ty:ty),*) -> $ret:ty = $path:path;)*
+    ) => {
+        $(
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $name($($arg : $arg_ty),*) -> $ret {
+                $path($($arg),*)
+            }
+        )*
+    };
+}
+#[macro_export]
+macro_rules! reexport_c_symbols {
+    (
+        $(fn $name:ident($($arg:ident : $arg_ty:ty),*) -> $ret:ty;)*
+    ) => {
+        $(
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $name($($arg : $arg_ty),*) -> $ret {
+                soundmodule::$name($($arg),*)
+            }
+        )*
+    };
+}
+
+#[macro_export]
+macro_rules! soundmodule_api_import {
+    () => {
+        use soundmodule::algoparam;
+        use soundmodule::algoparam::AlgoCParam;
+        soundmodule::reexport_c_symbols! {
+            fn soundmodule_release(this: *mut core::ffi::c_void) -> ();
+            fn soundmodule_get_params(this: *mut core::ffi::c_void) -> *const core::ffi::c_void;
+            fn soundmodule_send_midi(this: *mut core::ffi::c_void, data: *const u8, len: usize, timestamp: u64) -> ();
+            fn soundmodule_set_parameter(this: *mut core::ffi::c_void, address: u64, value: f32) -> ();
+            fn soundmodule_get_parameter(this: *mut core::ffi::c_void, address: u64) -> f32;
+            fn soundmodule_run(
+                this: *mut core::ffi::c_void, 
+                left_out: *mut f32,
+                right_out: *mut f32,
+                left_in: *const f32,
+                right_in: *const f32,
+                blksiz: u32) -> ();
+        }
+        soundmodule::reexport_c_symbols_explicit! {
+            fn algoparam_get_first_set(tree: *const core::ffi::c_void, basekey: *mut u64) -> *const core::ffi::c_char = algoparam::algoparam_get_first_set;
+            fn algoparam_get_next_set(tree: *const core::ffi::c_void, basekey: *mut u64) -> *const core::ffi::c_char = algoparam::algoparam_get_next_set; 
+            fn algoparam_get_first_param(tree: *const core::ffi::c_void, basekey: *mut u64) -> AlgoCParam = algoparam::algoparam_get_first_param;
+            fn algoparam_get_next_param(tree: *const core::ffi::c_void, basekey: *mut u64) -> AlgoCParam = algoparam::algoparam_get_next_param;
+        }
+    };
+}
