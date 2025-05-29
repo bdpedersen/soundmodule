@@ -1,13 +1,15 @@
-use algoparam::{AlgoParamNode, AlgoParamSet};
-use core::{ffi::c_void, sync};
+use algoparam::{AlgoParamSet};
+use core::{ffi::c_void};
 use std::{any::Any, slice};
 
+pub mod algoparam;
+pub mod util;
 pub trait Algorithm : Send + Sync {
     // Returns an AlgoParamSet with basename as name. Each algorithm parameter uses self_ref for control.
     // Submodules must be instantiated as Rc<RefCell<>> and the corresponding parameters inserted in the tree by this method.
     fn init(&mut self, fs: i32, states: usize);
     // Returns the parameter set and the associated storage for using with the setter
-    fn get_parameters(&self, basename: &str) -> (AlgoParamSet, Box<dyn Any>);
+    fn get_parameters(&self, basename: &str, displayname: &str) -> (AlgoParamSet, Box<dyn Any>);
     fn process(&self, parameter_zone: &Box<dyn Any>, outputs: &[&mut [f32]], inputs: &[&[f32]]);
     fn send_midi(&self, data: &[u8], timestamp: u64);
 }
@@ -23,7 +25,7 @@ impl SoundModule {
     pub fn new(mut algo: Box<dyn Algorithm>, fs: i32, states: usize) -> SoundModule {
 
         algo.init(fs, states);
-        let params = algo.get_parameters("Root");
+        let params = algo.get_parameters("Root", "Root");
         SoundModule { algo_state: algo, param: params.0, parameter_zone: params.1 }
     }
 }
