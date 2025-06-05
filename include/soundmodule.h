@@ -3,6 +3,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /// @brief Initializes a SoundModule object
 void soundmodule_init(void* self, int32_t fs);
 
@@ -42,4 +46,8 @@ float soundmodule_get_parameter(void* self, uint64_t address);
 /// @param ri right input
 /// @param blksiz blocksize for this call.
 void soundmodule_run(void* self, float* lo, float* ro, const float* li, const float* ri, uint32_t blksiz);
+
+#ifdef __cplusplus
+}
+#endif
 #endif
