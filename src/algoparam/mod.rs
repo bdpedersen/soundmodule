@@ -262,6 +262,12 @@ pub struct AlgoCParam {
     pub dependents: *const *const c_char,
 }
 
+#[repr(C)]
+pub struct AlgoCParamSet {
+    pub key: *const c_char,
+    pub name: *const c_char,
+}
+
 impl AlgoCParam {
     fn null() -> AlgoCParam {
         AlgoCParam {
@@ -288,34 +294,42 @@ impl AlgoCParam {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn algoparam_get_first_set(tree: *const c_void, basekey: *mut u64) -> *const c_char {
+impl AlgoCParamSet {
+    fn null() -> AlgoCParamSet {
+        AlgoCParamSet { key: null(), name: null() }
+    }
+
+    fn new(from: &AlgoParamSet) -> AlgoCParamSet {
+        AlgoCParamSet { key: from.identifier.as_ptr(), name: from.name.as_ptr() }
+    }
+}
+
+// API functions without name mangling
+pub fn algoparam_get_first_set(tree: *const c_void, basekey: *mut u64) -> AlgoCParamSet {
     let set = unsafe { &*(tree as *const AlgoParamSet)};
     let bkey = unsafe { *basekey };
     if let Some(newkey) = set.find_first_set(bkey) {
         unsafe { *basekey = newkey.1 };
-        return newkey.0.name.as_ptr();
+        return AlgoCParamSet::new(newkey.0);
     } else {
         unsafe { *basekey = KEY_NOT_FOUND };
-        return null();
+        return AlgoCParamSet::null();
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn algoparam_get_next_set(tree: *const c_void, basekey: *mut u64) -> *const c_char {
+pub fn algoparam_get_next_set(tree: *const c_void, basekey: *mut u64) -> AlgoCParamSet {
     let set = unsafe { &*(tree as *const AlgoParamSet)};
     let bkey = unsafe { *basekey };
     if let Some(newkey) = set.find_next_set(bkey) {
         unsafe { *basekey = newkey.1 };
-        return newkey.0.name.as_ptr();
+        return AlgoCParamSet::new(newkey.0);
     } else {
         unsafe { *basekey = KEY_NOT_FOUND };
-        return null();
+        return AlgoCParamSet::null();
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn algoparam_get_first_param(tree: *const c_void, basekey: *mut u64) -> AlgoCParam {
+pub fn algoparam_get_first_param(tree: *const c_void, basekey: *mut u64) -> AlgoCParam {
     let set = unsafe { &*(tree as *const AlgoParamSet)};
     let bkey = unsafe { *basekey };
     if let Some(newkey) = set.find_first_param(bkey) {
@@ -328,8 +342,7 @@ pub extern "C" fn algoparam_get_first_param(tree: *const c_void, basekey: *mut u
 
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn algoparam_get_next_param(tree: *const c_void, basekey: *mut u64) -> AlgoCParam {
+pub fn algoparam_get_next_param(tree: *const c_void, basekey: *mut u64) -> AlgoCParam {
     let set = unsafe { &*(tree as *const AlgoParamSet)};
     let bkey = unsafe { *basekey };
     if let Some(newkey) = set.find_next_param(bkey) {
@@ -391,14 +404,14 @@ mod tests {
         let mut basekey = KEY_NOT_FOUND;
         // Test first subset retrieval
         let first_subset = algoparam_get_first_set(as_voidptr(&tree), &mut basekey);
-        assert_eq!(as_strref(first_subset), "subset1");
+        assert_eq!(as_strref(first_subset.key), "subset1");
         let expected = (0x00u64 << 56) | 0x00ff_ffff_ffff_ffff;
         assert_eq!(basekey, expected);
         let subset1 = basekey;
 
         // Test next subset retrieval   
         let next_subset = algoparam_get_next_set(as_voidptr(&tree), &mut basekey);
-        assert_eq!(as_strref(next_subset), "subset2");
+        assert_eq!(as_strref(next_subset.key), "subset2");
         let expected = (0x01u64 << 56) | 0x00ff_ffff_ffff_ffff;
         assert_eq!(basekey, expected);
         let subset2 = basekey;
@@ -459,7 +472,7 @@ mod tests {
 
         basekey = subset2;
         let subsubset1= algoparam_get_first_set(as_voidptr(&tree), &mut basekey);
-        assert_eq!(as_strref(subsubset1),"mock");
+        assert_eq!(as_strref(subsubset1.key),"mock");
 
         let _= algoparam_get_next_set(as_voidptr(&tree), &mut basekey);
         assert_eq!(basekey, KEY_NOT_FOUND);

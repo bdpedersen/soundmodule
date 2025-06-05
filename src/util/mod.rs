@@ -126,6 +126,10 @@ impl Smooth {
         self.target.store(target, Ordering::Relaxed);
     }
 
+    pub fn get(&self) -> f32 {
+        self.target.load(Ordering::Relaxed)
+    }
+
     pub fn next_targeting(&self, target :f32) -> f32 {
         self.set(target);
         self.next()

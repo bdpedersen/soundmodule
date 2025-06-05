@@ -21,18 +21,23 @@ typedef struct {
     const char ** dependents;
 } AlgoCParam;
 
+typedef struct {
+    const char *key;   // Identifier for the parameter
+    const char *name;  // Human-readable name
+} AlgoCParamSet;
+
 /// Sentinel value returned in *basekey when no further element is found
 #define ALGOPARAM_KEY_NOT_FOUND ((uint64_t)(-1))
 
 /// Get the name of the first parameter set below the given key.
 /// If found, *basekey is updated and a string pointer is returned.
 /// If not found, *basekey is set to ALGOPARAM_KEY_NOT_FOUND and NULL is returned.
-const char *algoparam_get_first_set(const AlgoParamSet *tree, uint64_t *basekey);
+AlgoCParamSet algoparam_get_first_set(const AlgoParamSet *tree, uint64_t *basekey);
 
 /// Get the name of the next parameter set after the given key.
 /// If found, *basekey is updated and a string pointer is returned.
 /// If not found, *basekey is set to ALGOPARAM_KEY_NOT_FOUND and NULL is returned.
-const char *algoparam_get_next_set(const AlgoParamSet *tree, uint64_t *basekey);
+AlgoCParamSet algoparam_get_next_set(const AlgoParamSet *tree, uint64_t *basekey);
 
 /// Get the first parameter under the given key.
 /// If found, *basekey is updated and a filled AlgoCParam is returned.

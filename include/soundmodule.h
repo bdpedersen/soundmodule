@@ -3,6 +3,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/// @brief Initializes a SoundModule object
+void soundmodule_init(void* self, int32_t fs);
+
 /// @brief  Frees a SoundModule object
 /// @param self 
 void soundmodule_release(void* self);

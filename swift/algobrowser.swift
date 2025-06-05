@@ -2,7 +2,7 @@ import Foundation
 import AudioToolbox
 
 // Native Swift representation of the Rust-provided parameter
-struct AlgoParam {
+class AlgoParam {
     let key: String
     let name: String
     let min: Float
@@ -10,45 +10,94 @@ struct AlgoParam {
     let unit: AudioUnitParameterUnit
     let address: UInt64  // ← the value of `basekey` after the call
     let dependents: [String]
+    var dependentAddresses: [UInt64]
+    
+    init(key: String, name: String, min: Float, max: Float, unit: AudioUnitParameterUnit, address: UInt64, dependents: [String], dependentAddresses: [UInt64]) {
+        self.key = key
+        self.name = name
+        self.min = min
+        self.max = max
+        self.unit = unit
+        self.address = address
+        self.dependents = dependents
+        self.dependentAddresses = dependentAddresses
+    }
+    
+    func asAUParameter() -> AUParameter {
+        AUParameterTree.createParameter(withIdentifier: key, name: name, address: address, min: min, max: max, unit: unit, unitName: nil, valueStrings: nil, dependentParameters: dependentAddresses.map( { NSNumber.init(value:$0) }))
+    }
 }
 
+class AlgoParamSet {
+    let key: String
+    let name: String
+    let address: UInt64
+    var parameters: [AlgoParam]
+    var children: [AlgoParamSet]
+    
+    init(key: String, name: String, address: UInt64, parameters: [AlgoParam], children: [AlgoParamSet]) {
+        self.key = key
+        self.name = name
+        self.address = address
+        self.parameters = parameters
+        self.children = children
+    }
+    
+    func parameter(for keyPath: String) -> AlgoParam? {
+        let pathelems = keyPath.split(separator: ".", maxSplits: 1)
+        if pathelems.count == 1 {
+            // We are at where the child should be
+            return parameters.first { $0.key == String(pathelems[0]) }
+        } else {
+            return children.first { $0.key == String(pathelems[0]) }?.parameter(for: String(pathelems[1]))
+        }
+    }
+    
+    func asAUParameterGroup() -> AUParameterGroup {
+        let params = parameters.map { $0.asAUParameter() }
+        let groups = children.map { $0.asAUParameterGroup() }
+        let bunch = params + groups
+        return AUParameterTree.createGroup(withIdentifier: key, name: name, children: bunch)
+    }
+}
+
+let NOT_FOUND = UInt64.max
 
 class AlgoBrowser {
-    let static NOT_FOUND = UInt64.max
     private let tree: UnsafeRawPointer
 
     init(tree: UnsafeRawPointer) {
         self.tree = tree
     }
 
-    func firstSet(from key: inout UInt64) -> String? {
-        guard let ptr = algoparam_get_first_set(tree, &key) else { return nil }
-        return String(cString: ptr)
+    private func firstSet(from key: inout UInt64) -> AlgoParamSet? {
+        let raw = algoparam_get_first_set(tree, &key)
+        return mapCParamSet(raw, address: key)
     }
 
-    func nextSet(from key: inout UInt64) -> String? {
-        guard let ptr = algoparam_get_next_set(tree, &key) else { return nil }
-        return String(cString: ptr)
+    private func nextSet(from key: inout UInt64) -> AlgoParamSet? {
+        let raw = algoparam_get_next_set(tree, &key)
+        return mapCParamSet(raw, address: key)
     }
 
-    func firstParam(from key: inout UInt64) -> AlgoParam? {
+    private func firstParam(from key: inout UInt64) -> AlgoParam? {
         let raw = algoparam_get_first_param(tree, &key)
         return mapCParam(raw, address: key)
     }
 
-    func nextParam(from key: inout UInt64) -> AlgoParam? {
+    private func nextParam(from key: inout UInt64) -> AlgoParam? {
         let raw = algoparam_get_next_param(tree, &key)
         return mapCParam(raw, address: key)
     }
 
     private func mapCParam(_ cparam: AlgoCParam, address: UInt64) -> AlgoParam? {
         // Use sentinel to detect invalid result
-        guard address != NOT_FOUND {
+        guard address != NOT_FOUND else {
             return nil
         }
 
-        let key = String(cString: keyPtr)
-        let name = String(cString: namePtr)
+        let key = String(cString: cparam.key)
+        let name = String(cString: cparam.name)
         let unit = AudioUnitParameterUnit(rawValue: UInt32(cparam.dtype)) ?? .generic
 
         var dependents: [String] = []
@@ -67,126 +116,67 @@ class AlgoBrowser {
             max: cparam.max, 
             unit: unit, 
             address: address, 
-            dependents: dependents)
+            dependents: dependents,
+            dependentAddresses: []
+        )
     }
-}
-
-
-/// Build a parameter tree including dependencies here...
-extension AlgoBrowser {
-    func buildParameterTree(from rootKey: UInt64 = NOT_FOUND) -> AUParameterTree {
-        var parameterLookup: [String: AUParameter] = [:]
-        var paramDependents: [String: [String]] = [:] // Store fully qualified dependent names
-
-        func buildSubtree(from key: UInt64, groupPath: [String]) -> AUParameterNode {
-            var groupChildren: [AUParameterNode] = []
-
-            // Traverse child groups
-            var setKey = key
-            if let setName = firstSet(from: &setKey) {
-                groupChildren.append(buildSubtree(from: setKey, groupPath: groupPath + [setName]))
-                while let nextSetName = nextSet(from: &setKey) {
-                    groupChildren.append(buildSubtree(from: setKey, groupPath: groupPath + [nextSetName]))
-                }
-            }
-
-            // Traverse parameters
-            var paramKey = key
-            if let param = firstParam(from: &paramKey) {
-                let fqName = (groupPath + [param.key]).joined(separator: "::")
-                let node = makeAUParameter(from: param, fqName: fqName, groupPath: groupPath)
-                parameterLookup[fqName] = node
-                paramDependents[fqName] = qualifyDependents(param.dependents, groupPath: groupPath)
-                groupChildren.append(node)
-
-                while let next = nextParam(from: &paramKey) {
-                    let fqNext = (groupPath + [next.key]).joined(separator: "::")
-                    let node = makeAUParameter(from: next, fqName: fqNext, groupPath: groupPath)
-                    parameterLookup[fqNext] = node
-                    paramDependents[fqNext] = qualifyDependents(next.dependents, groupPath: groupPath)
-                    groupChildren.append(node)
-                }
-            }
-
-            let groupName = groupPath.last ?? "Root"
-            return AUParameterGroup.createGroup(
-                withIdentifier: "group_\(key)",
-                name: groupName,
-                children: groupChildren
-            )
+    
+    private func mapCParamSet(_ cparamset: AlgoCParamSet, address: UInt64) -> AlgoParamSet? {
+        guard address != NOT_FOUND else {
+            return nil
         }
-
-        func makeAUParameter(from param: AlgoParam, fqName: String, groupPath: [String]) -> AUParameter {
-            return AUParameter(
-                identifier: param.key,
-                name: param.name,
-                address: param.address,
-                min: param.min,
-                max: param.max,
-                unit: param.unit,
-                unitName: nil,
-                flags: [.flag_IsReadable, .flag_IsWritable],
-                valueStrings: nil,
-                dependentParameters: nil // Filled later
-            )
-        }
-
-        func qualifyDependents(_ dependents: [String], groupPath: [String]) -> [String] {
-            return dependents.map { dep in
-                if dep.contains("::") {
-                    // Relative to subtree root
-                    return (groupPath + dep.split(separator: ".").map(String.init)).joined(separator: ".")
-                } else {
-                    // Same group
-                    return (groupPath + [dep]).joined(separator: ".")
-                }
-            }
-        }
-
-        let root = buildSubtree(from: rootKey, groupPath: ["Root"])
-        let tree = AUParameterTree.createTree(withChildren: [root])
-
-        // Resolve dependent parameters
-        for (fqName, depPaths) in paramDependents {
-            guard let node = parameterLookup[fqName] else { continue }
-            let resolved = depPaths.compactMap { parameterLookup[$0] }
-            node.setValue(resolved, forKey: "dependentParameters")
-        }
-
-        return tree
+        
+        let key = String(cString: cparamset.key)
+        let name = String(cString: cparamset.name)
+        
+        return AlgoParamSet(key: key, name: name, address: address, parameters: [], children: [])
     }
-}
-
-
-extension AUParameterTree {
-    func prettyPrint() {
-        func printNode(_ node: AUParameterNode, indent: Int) {
-            let prefix = String(repeating: "  ", count: indent)
-
-            if let param = node as? AUParameter {
-                print("\(prefix)↳ Param: \(param.identifier)")
-                print("\(prefix)   Name: \(param.displayName)")
-                print("\(prefix)   Address: \(param.address)")
-                print("\(prefix)   Range: [\(param.min);\(param.max)]")
-                print("\(prefix)   Unit: \(param.unit)")
-
-                if let dependents = param.value(forKey: "dependentParameters") as? [AUParameter], !dependents.isEmpty {
-                    print("\(prefix)   Affects parameters:")
-                    for dep in dependents {
-                        print("\(prefix)     - \(dep.identifier) [\(dep.displayName)], addr: \(dep.address)")
-                    }
-                }
-            } else {
-                print("\(prefix)Group: \(node.displayName)")
-                for child in node.children {
-                    printNode(child, indent: indent + 1)
+    
+    private func fixupDependencies(in algoparamset: AlgoParamSet)  {
+        // Iterate over all parameters
+        for param in algoparamset.parameters {
+            // ... and all dependents
+            for dependent in param.dependents {
+                // Find the address of the parameters that are described here
+                if let address = algoparamset.parameter(for: dependent)?.address {
+                    param.dependentAddresses.append(address)
                 }
             }
         }
-
-        for root in children {
-            printNode(root, indent: 0)
+        for child in algoparamset.children {
+            fixupDependencies(in: child)
         }
+    }
+    
+    private func build(from root: UInt64, basekey: String, displayname: String) -> AlgoParamSet {
+        var rootParam = root
+        let set = AlgoParamSet(key: basekey, name: displayname, address: root, parameters: [], children: [])
+        // Get all parameters on this level
+        var param = firstParam(from: &rootParam)
+        while rootParam != NOT_FOUND {
+            set.parameters.append(param!)
+            param = nextParam(from: &rootParam)
+        }
+        // Get all child nodes
+        rootParam = root
+        var setChild = firstSet(from: &rootParam)
+        while rootParam != NOT_FOUND {
+            set.children.append(build(from: rootParam, basekey: setChild!.key, displayname: setChild!.name))
+            setChild = nextSet(from: &rootParam)
+        }
+        return set
+    }
+    
+    private func build() -> AlgoParamSet {
+        let set = build(from: NOT_FOUND, basekey: "root", displayname: "Root")
+        fixupDependencies(in: set)
+        return set
+    }
+    
+    func getAUParameterTree() -> AUParameterTree {
+        
+        let root = build().asAUParameterGroup()
+        return AUParameterTree.createTree(withChildren: [root])
     }
 }
 

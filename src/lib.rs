@@ -7,10 +7,10 @@ pub mod util;
 pub trait Algorithm : Send + Sync {
     // Returns an AlgoParamSet with basename as name. Each algorithm parameter uses self_ref for control.
     // Submodules must be instantiated as Rc<RefCell<>> and the corresponding parameters inserted in the tree by this method.
-    fn init(&mut self, fs: i32, states: usize);
+    fn init(&mut self, fs: i32);
     // Returns the parameter set and the associated storage for using with the setter
     fn get_parameters(&self, basename: &str, displayname: &str) -> (AlgoParamSet, Box<dyn Any>);
-    fn process(&self, parameter_zone: &Box<dyn Any>, outputs: &[&mut [f32]], inputs: &[&[f32]]);
+    fn process(&self, parameter_zone: &Box<dyn Any>, outputs: &mut [&mut [f32]], inputs: &[&[f32]]);
     fn send_midi(&self, data: &[u8], timestamp: u64);
 }
 
@@ -22,21 +22,25 @@ pub struct SoundModule {
 }
 
 impl SoundModule {
-    pub fn new(mut algo: Box<dyn Algorithm>, fs: i32, states: usize) -> SoundModule {
+    pub fn new(algo: Box<dyn Algorithm>) -> SoundModule {
 
-        algo.init(fs, states);
-        let params = algo.get_parameters("Root", "Root");
+        let params = algo.get_parameters("root", "Root");
         SoundModule { algo_state: algo, param: params.0, parameter_zone: params.1 }
     }
 }
 
-fn as_soundmodule<'a>(this: *mut c_void) -> &'a mut SoundModule {
+pub fn as_soundmodule<'a>(this: *mut c_void) -> &'a mut SoundModule {
     let mut _mod = this as *mut SoundModule;
     unsafe { _mod.as_mut().unwrap() } 
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn soundmodule_release(this: *mut c_void) {
+pub fn soundmodule_init(this: *mut c_void, fs: i32) {
+    let myself = as_soundmodule(this);
+    myself.algo_state.init(fs);
+}
+
+// API functions without name mangling
+pub fn soundmodule_release(this: *mut c_void) {
     if !this.is_null() {
         unsafe {
             drop(Box::from_raw(as_soundmodule(this) as *mut _));
@@ -44,35 +48,30 @@ pub extern "C" fn soundmodule_release(this: *mut c_void) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn soundmodule_get_params(this: *mut c_void) -> *const c_void {
+pub fn soundmodule_get_params(this: *mut c_void) -> *const c_void {
     let myself = as_soundmodule(this);
     let ptr = &myself.param as *const _ as *const c_void;
     ptr
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn soundmodule_send_midi(this: *mut c_void, data: *const u8, len: usize, timestamp: u64) {
+pub fn soundmodule_send_midi(this: *mut c_void, data: *const u8, len: usize, timestamp: u64) {
     let myself = as_soundmodule(this);
     let box_ref = &myself.algo_state;
     let data = unsafe { slice::from_raw_parts(data, len) };
     box_ref.send_midi(data,timestamp);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn soundmodule_set_parameter(this: *mut c_void, address: u64, value: f32) {
+pub fn soundmodule_set_parameter(this: *mut c_void, address: u64, value: f32) {
     let myself = as_soundmodule(this);
     let _ = myself.param.set(value,address);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn soundmodule_get_parameter(this: *mut c_void, address: u64) -> f32 {
+pub fn soundmodule_get_parameter(this: *mut c_void, address: u64) -> f32 {
     let myself = as_soundmodule(this);
     myself.param.get(address).unwrap_or(0.0)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn soundmodule_run(
+pub fn soundmodule_run(
     this: *mut c_void, 
     left_out: *mut f32,
     right_out: *mut f32,
@@ -87,12 +86,13 @@ pub extern "C" fn soundmodule_run(
         let ri = unsafe {slice::from_raw_parts(right_in, bz) };
         let myself = as_soundmodule(this);
         
-        let output = [lo,ro];
+        let mut output = [lo,ro];
         let input = [li,ri];
 
-        myself.algo_state.process(&myself.parameter_zone, &output, &input);
+        myself.algo_state.process(&myself.parameter_zone, &mut output, &input);
 }
 
+// Public macros to re-export functions for the API
 #[macro_export]
 macro_rules! reexport_c_symbols_explicit {
     (
@@ -106,6 +106,7 @@ macro_rules! reexport_c_symbols_explicit {
         )*
     };
 }
+
 #[macro_export]
 macro_rules! reexport_c_symbols {
     (
@@ -124,8 +125,11 @@ macro_rules! reexport_c_symbols {
 macro_rules! soundmodule_api_import {
     () => {
         use soundmodule::algoparam;
-        use soundmodule::algoparam::AlgoCParam;
+        use soundmodule::algoparam::{AlgoCParam,AlgoCParamSet};
+
+
         soundmodule::reexport_c_symbols! {
+            fn soundmodule_init(this: *mut core::ffi::c_void, fs: i32) -> ();
             fn soundmodule_release(this: *mut core::ffi::c_void) -> ();
             fn soundmodule_get_params(this: *mut core::ffi::c_void) -> *const core::ffi::c_void;
             fn soundmodule_send_midi(this: *mut core::ffi::c_void, data: *const u8, len: usize, timestamp: u64) -> ();
@@ -140,8 +144,8 @@ macro_rules! soundmodule_api_import {
                 blksiz: u32) -> ();
         }
         soundmodule::reexport_c_symbols_explicit! {
-            fn algoparam_get_first_set(tree: *const core::ffi::c_void, basekey: *mut u64) -> *const core::ffi::c_char = algoparam::algoparam_get_first_set;
-            fn algoparam_get_next_set(tree: *const core::ffi::c_void, basekey: *mut u64) -> *const core::ffi::c_char = algoparam::algoparam_get_next_set; 
+            fn algoparam_get_first_set(tree: *const core::ffi::c_void, basekey: *mut u64) -> AlgoCParamSet = algoparam::algoparam_get_first_set;
+            fn algoparam_get_next_set(tree: *const core::ffi::c_void, basekey: *mut u64) -> AlgoCParamSet = algoparam::algoparam_get_next_set; 
             fn algoparam_get_first_param(tree: *const core::ffi::c_void, basekey: *mut u64) -> AlgoCParam = algoparam::algoparam_get_first_param;
             fn algoparam_get_next_param(tree: *const core::ffi::c_void, basekey: *mut u64) -> AlgoCParam = algoparam::algoparam_get_next_param;
         }
