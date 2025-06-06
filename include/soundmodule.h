@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "algoparam.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
